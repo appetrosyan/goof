@@ -145,9 +145,7 @@ pub struct Unknown<'a, T: Eq>{
     pub(crate) value: T,
 }
 
-impl<'a, T: Eq + Copy> Copy for Unknown<'a, T> {
-
-}
+impl<'a, T: Eq + Copy> Copy for Unknown<'a, T> {}
 
 impl<T: Eq + Debug> Debug for Unknown<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
