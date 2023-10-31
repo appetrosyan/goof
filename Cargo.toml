@@ -1,6 +1,6 @@
 [package]
 name = "goof"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 crate-type = "lib"
 description = "A reusable, composable, aggregate and `no_std`-friendly error library"
