@@ -1,10 +1,12 @@
 [package]
 name = "goof"
-version = "0.2.1"
+version = "0.2.2"
+authors = ["Aleksandr Petrosyan <appetrosyan@icloud.com>"]
 edition = "2021"
 crate-type = "lib"
 description = "A reusable, composable, aggregate and `no_std`-friendly error library"
 license = "Apache-2.0"
+repository = "https://github.com/appetrosyan/goof"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
