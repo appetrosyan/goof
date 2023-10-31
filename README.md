@@ -1,0 +1,117 @@
+
+# Table of Contents
+
+1.  [Goof](#org0728179)
+2.  [Goals](#orge822755)
+        1.  [Overarching API decisions](#org4042c8f)
+        2.  [Supported use-cases](#orgadc10f1)
+3.  [Progress](#orge446663)
+4.  [Changelog](#orgb6f5e39)
+
+
+<a id="org0728179"></a>
+
+# Goof
+
+An early composable, and re-usable library for tiny structs that you
+would be writing on your own, but which you really shouldn't.
+
+    
+    use goof::{Mismatch, assert_eq};
+    
+    fn fallible_func(thing: &[u8]) -> Result<(), Mismatch<usize>> {
+        assert_eq(&32, &thing.len())?;
+    
+        Ok(())
+    }
+    
+    assert_eq!(fallible_func(&[]).unwrap_err(), assert_eq(&32, &0).unwrap_err())
+
+So why use it? It's pre-alpha, so it's not particularly useful yet.
+But imagine a situation in which you don't really want to panic on
+failed assertions. These functions can then be a lightweight 1-1
+replacement of the standard library \`assert<sub>eq</sub>!\` macro.  It will not
+panic immediately, but instead create a structure called
+rust<sub>src</sub>{Mismatch}, which has all of the appropriate traits (except
+`std::error::Error` because I want to add `std` support, rather than
+subtract it) implemented.
+
+These will participate in all manner of goodies, that don't
+necessarily depend on `std`, but that can effectively make `goof` a
+one-stop-shop for all your error handling needs. It will hopefully be
+as useful as `eyre` and `thiserror` while providing a slightly
+different approach to designing error APIs.
+
+
+<a id="orge822755"></a>
+
+# Goals
+
+
+<a id="org4042c8f"></a>
+
+### Overarching API decisions
+
+-   Be `no_std` compatible. The structures should be easy to use across
+    the FFI boundary, simple and hopefully predictable in their
+    behaviours.
+-   Embedded-friendly. We want to act as if we have an allocator, while
+    keeping all of the structures on-stack for as much as possible.
+-   All structs should attempt to be `Copy`-able if possible.
+-   Nudge users to avoid panics as much as possible.
+-   Ergonomic design. Commonly used patterns should be terse and
+    maximally easy to write.
+-   Few to no dependencies.
+-   Few to no features.
+-   LTO-friendly code elimination.
+
+
+<a id="orgadc10f1"></a>
+
+### Supported use-cases
+
+-   Contextual error propagation like the old [`failure`](https://docs.rs/failure/latest/failure/) crate.
+    -   Each error can have an optional wrapping structure which explains
+        the context and helps in debugging.
+    -   Support for [tracing spans](https://docs.rs/tracing/latest/tracing/), so that errors have tracing spans
+        attached.
+-   Different error handling methods:
+    -   Fail fast, where any failed assertion immediately produces the
+        corresponding error and is being propagated upwards.
+    -   Fail completely, where any failure will stop some logic from being
+        executed, but will accumulate errors instead of immediately
+        propagating them upwards.
+    -   Fail recoverably, where functions to try and catch specific
+        failure modes can be applied to recover from some, but not all
+        error conditions.
+    -   Resumable error, where any form of failure is propagated up the
+        call stack, but the failure can be corrected and the function can
+        be resumed.
+-   Pretty printing, like in `eyre`, and (hopefully) like in `miette`.
+
+
+<a id="orge446663"></a>
+
+# Progress
+
+The library is in its early stages. I'm planning on approaching this
+from the minimalist perspective, of making a bunch of `0.*` versions and
+when the library is complete, releasing the `1.0` version. While this
+is in no way a pre-release candidate and as is, it should be ready for
+production use, I would recommend not spending too much time worrying
+about the changes in the newer versions. Update as you see fit, if you
+do, I will be providing detailed notes on how to make the jump.
+
+
+<a id="orgb6f5e39"></a>
+
+# Changelog
+
+-   0.1.0
+    -   Initial, extremely basic implementation of `Mismatch`,
+        `Outside` and `Unknown` structures.
+    -   Initial implementations of `assert_eq`, `assert_in`,
+        `assert_known_enum`, and `assert_known`.
+-   0.2.0
+    -   Swapped around arguments in `assert_eq` for more consistency.
+
