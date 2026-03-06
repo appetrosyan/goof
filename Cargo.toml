@@ -1,6 +1,6 @@
 [package]
 name = "goof"
-version = "0.2.3"
+version = "0.3.1"
 authors = ["Aleksandr Petrosyan <appetrosyan@icloud.com>"]
 edition = "2021"
 crate-type = "lib"
@@ -13,4 +13,4 @@ features = ["std"]
 members = ["goof-derive"]
 
 [dependencies]
-goof-derive = { path = "goof-derive", version = "0.2.3" }
+goof-derive = { path = "goof-derive", version = "0.3.1" }
