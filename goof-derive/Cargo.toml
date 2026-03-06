@@ -1,0 +1,16 @@
+[package]
+name = "goof-derive"
+version = "0.2.3"
+authors = ["Aleksandr Petrosyan <appetrosyan@icloud.com>"]
+edition = "2021"
+description = "Derive macros for the goof error library"
+license = "Apache-2.0"
+repository = "https://github.com/appetrosyan/goof"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

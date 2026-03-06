@@ -7,7 +7,10 @@ crate-type = "lib"
 description = "A reusable, composable, aggregate and `no_std`-friendly error library"
 license = "Apache-2.0"
 repository = "https://github.com/appetrosyan/goof"
+features = ["std"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = ["goof-derive"]
 
 [dependencies]
+goof-derive = { path = "goof-derive", version = "0.2.3" }
