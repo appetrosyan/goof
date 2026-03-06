@@ -23,7 +23,7 @@
 //!     #[error("configuration file not found")]
 //!     NotFound,
 //!     #[error("i/o error")]
-//!     Io(#[from] std::io::Error),
+//!     Io(#[from] goof::Mishap),
 //!     #[error("invalid value {value} (expected {expected})")]
 //!     Invalid { value: i32, expected: i32 },
 //! }
@@ -418,17 +418,8 @@ pub fn assert_known<T: Eq>(knowns: &[T], value: T) -> Result<T, Unknown<'_, T>> 
 /// the overhead of an `Arc` is big. As is the overhead of going with
 /// a trait object.  Quite honestly, your errors should be on a cold
 /// path anyway.
-#[derive(Debug)]
 pub struct Mishap {
     wrapped_err: Arc<dyn std::error::Error>,
-}
-
-impl<T: std::error::Error + 'static> From<T> for Mishap {
-    fn from(value: T) -> Self {
-        Self {
-            wrapped_err: Arc::new(value),
-        }
-    }
 }
 
 impl Display for Mishap {
@@ -436,6 +427,16 @@ impl Display for Mishap {
         write!(f, "{}", self.wrapped_err)
     }
 }
+
+impl Debug for Mishap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mishap")
+            .field("wrapped_err", &self.wrapped_err)
+            .finish()
+    }
+}
+
+impl core::error::Error for Mishap {}
 
 #[cfg(test)]
 pub mod tests {
