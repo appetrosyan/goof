@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "goof"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "goof-derive",
 ]
 
 [[package]]
 name = "goof-derive"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "proc-macro2",
  "quote",

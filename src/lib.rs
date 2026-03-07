@@ -26,6 +26,8 @@
 //!     Io(#[from] goof::Mishap),
 //!     #[error("invalid value {value} (expected {expected})")]
 //!     Invalid { value: i32, expected: i32 },
+//!		#[error("Failed to set mpv option {option}: {detail}")]
+//!     MpvOption { option: String, detail: String },
 //! }
 //!
 //! let e = AppError::NotFound;
@@ -418,6 +420,17 @@ pub fn assert_known<T: Eq>(knowns: &[T], value: T) -> Result<T, Unknown<'_, T>> 
 /// the overhead of an `Arc` is big. As is the overhead of going with
 /// a trait object.  Quite honestly, your errors should be on a cold
 /// path anyway.
+///
+/// ```rust
+/// use goof::Error;
+///
+/// #[derive(Debug, Error)]
+/// pub enum AppError {
+///     #[error("Failed to set mpv option {option}: {detail}")]
+///    MpvOption { option: String, detail: String },
+/// }
+/// ```
+///
 pub struct Mishap {
     wrapped_err: Arc<dyn std::error::Error>,
 }
@@ -557,7 +570,8 @@ pub mod tests {
 
     #[test]
     fn struct_auto_source_field() {
-        let source = std::io::Error::new(std::io::ErrorKind::Other, "oops");
+        // exhibit A: A moronic error that you might encounter in the wild
+        let source = std::io::Error::other("oops");
         let e = AutoSourceError { source };
         assert!(std::error::Error::source(&e).is_some());
     }
@@ -572,7 +586,7 @@ pub mod tests {
 
     #[test]
     fn struct_from_impl() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "disk full");
+        let io_err = std::io::Error::other("disk full");
         let e: FromIoError = io_err.into();
         assert_eq!(e.to_string(), "from io error");
         assert!(std::error::Error::source(&e).is_some());

@@ -1,6 +1,6 @@
 [package]
 name = "goof-derive"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["Aleksandr Petrosyan <appetrosyan@icloud.com>"]
 edition = "2021"
 description = "Derive macros for the goof error library"
