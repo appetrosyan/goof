@@ -1631,6 +1631,7 @@ fn generate_provide_enum_arm(
 // Placeholder parsing utilities
 // ============================================================================
 
+// FIXME: This function is run twice
 fn parse_placeholders(fmt: &str) -> Vec<String> {
     let mut results = Vec::new();
     let mut chars = fmt.chars().peekable();
@@ -1642,21 +1643,13 @@ fn parse_placeholders(fmt: &str) -> Vec<String> {
             }
             let mut name = String::new();
             for c2 in chars.by_ref() {
-                if c2 == '}' || c2 == ':' {
+                if c2 == '}' {
                     break;
                 }
                 name.push(c2);
             }
             if !name.is_empty() {
-                results.push(name);
-            }
-            // Consume until '}'
-            if fmt.contains(':') {
-                for c2 in chars.by_ref() {
-                    if c2 == '}' {
-                        break;
-                    }
-                }
+                results.push(name.chars().take_while(|c| *c != ':').collect());
             }
         }
     }
@@ -1714,4 +1707,27 @@ fn find_binding_for_name_or_idx(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn placeholder() {
+        let v: Vec<String> = parse_placeholders("{{}}");
+        assert_eq!(v, Vec::<String>::new());
+        let v: Vec<String> = parse_placeholders("Hello world! ");
+        assert_eq!(v, Vec::<String>::new());
+        let v: Vec<String> = parse_placeholders("Hello {world}");
+        assert_eq!(v, vec!["world"]);
+        let v: Vec<String> = parse_placeholders("Hello {world} and {you}");
+        assert_eq!(v, vec!["world", "you"]);
+        let v: Vec<String> = parse_placeholders("Hello '{world}' and {you}");
+        assert_eq!(v, vec!["world", "you"]);
+        let v: Vec<String> = parse_placeholders("Hello '{world:?}' and {you}");
+        assert_eq!(v, vec!["world", "you"]);
+        let v: Vec<String> = parse_placeholders("Hello '{world}': and {you} : and {{I}}, and {I}");
+        assert_eq!(v, vec!["world", "you", "I"]);
+    }
 }
