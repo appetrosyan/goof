@@ -8,9 +8,9 @@ would be writing on your own, but which you really shouldn\'t.
 use goof::{Mismatch, assert_eq};
 
 fn fallible_func(thing: &[u8]) -> Result<(), Mismatch<usize>> {
-    assert_eq(&32, &thing.len())?;
+	assert_eq(&32, &thing.len())?;
 
-    Ok(())
+	Ok(())
 }
 
 assert_eq!(fallible_func(&[]).unwrap_err(), assert_eq(&32, &0).unwrap_err())
@@ -34,45 +34,215 @@ designing error APIs.
 
 # Goals
 
-### Overarching API decisions
+### Drop-in `thiserror` replacement
 
--   Be `no_std`{.verbatim} compatible. The structures should be easy to
-    use across the FFI boundary, simple and hopefully predictable in
-    their behaviours.
--   Embedded-friendly. We want to act as if we have an allocator, while
-    keeping all of the structures on-stack for as much as possible.
--   All structs should attempt to be `Copy`{.verbatim}-able if possible.
--   Nudge users to avoid panics as much as possible.
--   Ergonomic design. Commonly used patterns should be terse and
-    maximally easy to write.
--   Few to no dependencies.
--   Few to no features.
--   LTO-friendly code elimination.
+We can do everything that `thiserror` can do, minus `syn` and `quote`
+dependencies.  Why would you want to use this?  Hopefully I can make
+it compile faster, so you have less guilt when adding it to your
+code-base.
 
-### Supported use-cases
+But since `thiserror` has to remain stable, I can implement things
+that `thiserror` cannot, for example, I support
+`::core::error::Error`, meaning you can use `goof::Error` in
+`[no_std]` contexts.
 
--   Contextual error propagation like the old
-    [`failure`{.verbatim}](https://docs.rs/failure/latest/failure/)
-    crate.
-    -   Each error can have an optional wrapping structure which
-        explains the context and helps in debugging.
-    -   Support for [tracing
-        spans](https://docs.rs/tracing/latest/tracing/), so that errors
-        have tracing spans attached.
--   Different error handling methods:
-    -   Fail fast, where any failed assertion immediately produces the
-        corresponding error and is being propagated upwards.
-    -   Fail completely, where any failure will stop some logic from
-        being executed, but will accumulate errors instead of
-        immediately propagating them upwards.
-    -   Fail recoverably, where functions to try and catch specific
-        failure modes can be applied to recover from some, but not all
-        error conditions.
-    -   Resumable error, where any form of failure is propagated up the
-        call stack, but the failure can be corrected and the function
-        can be resumed.
--   Pretty printing, like in `eyre`{.verbatim}, and (hopefully) like in
-    `miette`{.verbatim}.
+TODO: Another thing that you might find interesting is that you can
+use `goof::Error` to automatically create sensible doc-strings for
+your code. A lot of the time, I found that the doc-comments for Error
+enum variants just repeat the error messages.
+
+
+
+### Ready made error types
+
+You get some ready-made error types, to cut out the need for custom
+repeated boilerplate.  You have no idea HOW MANY TIMES, I had to
+create a structure that said, `expect: 1`, `got: 2`.  I have
+non-panicking `asserts` which can be **very** useful if applied
+correctly.  You have `Mismatch<T>`, `Outside<T>` and a few others to
+help.
+
+### TODO: Log-and-forget
+
+Most errors aren't really something that you intend to process.  A lot
+of the time, you know
+
+
+### Anyhow replacement
+
+You have `eyre` and you have `color_eyre`.  But you also sometimes
+want to have something that is in-between `Box<dyn Error>` and that.
+One crate to rule them all, and in the terminal print them.  I don't
+plan to be fancy, I plan for you to be able to use what you want,
+similar to how `tracing` works, but simpler.
+
+### Copy-friendly
+
+Did you ever want to make a structure `Clone` but found out that
+`std::io::Error` was not `Clone`, because some people decided that
+they wanted to be lazy, and somehow that code was still accepted into
+the standard library?  The right thing to do, is to convert a
+`std::io::Error` into an information-preserving analogue, that is also
+`Clone`.  I give you that.
+
+Structs that **could** be copy, **are**.
+
+`Mishap`, which is our equivalent of `eyre::Report` is Clone.
+
+### TODO: FFI-friendly
+
+This is why I needed this.  Picture a situation where you need to use
+`no_std` to reduce the size of a binary.  But you can't without adding
+a bunch of boilerplate, because the representations on some of the
+structures on the cold-path are not solidified.
+
+Worry no more.  `goof::Error` is opt-out for `repr(C)`.  Why?  Because
+the reason why Rust chose to make all structures ABI-unstable by
+default, is because it wanted to have some leeway for performance
+optimisations, at the cost of API stability.  Errors happen
+infrequently, and correct and flexible error handling is **much** more
+important than performance on a cold path.  So being able to pass a
+number of errors through the FFI boundary is actually useful.
+
+### TODO: Goof Fallible
+
+A lot of the time, you are writing a function, but have to go back and
+forth between different code locations to co-design an error type.
+Often, you will just use `anyhow`, losing the ability to meaningfully
+handle the error, and the nice functional-style match semantics,
+instead getting opaque unsightly `kind` and `downcast` patterns all
+over your code.
+
+I propose generating an ad-hoc Error enum on the spot.  How does that
+work?
+
+You annotate the function with `#[goof::fallible]`
+
+Inside the function whenever you want to return 
+- a unit variant, you call `goof::bail!("Error text": VariantName)`.
+- a captured variable, `goof::bail!("Error text with {variable:?}": VariantName{variable})`, the
+  type must be declared explicitly `let variable: Type = value` and
+  implement `std::fmt::Debug`
+
+Forwarded errors work a bit differently.  Rust's `?` operator knows
+the underlying type of the error being thrown, and if procedural
+macros worked a bit more like Lisp, we would too.  Alas, we have to
+annotate the types.  Fortunately, we can infer it, in a few cases.  
+
+```rust
+	read.map_err(ConfigError::Read)?;
+```
+gives us just enough information to figure out that the return type
+can be `ConfigError`.  This will break if `ConfigError` is generic, so
+you'd have to use the turbofish...  sorry.
+
+Another thing you can say is `wrap_err`.  This signals to the macro
+that you are using `Mishap`, and so it will simply wrap that.  This
+also disables the auto-generated `#[from]` annotation.
+
+Let's say you want to wrap an existing error, preserve its type, but
+differentiate different conditions: for example, you are loading three
+files, and you want to wrap the `std::io::Error`, but differentiate
+which file failed to load; in that case you should use the following 
+syntax:
+
+```rust
+#[goof::fallible]
+fn init_program() -> Result<Config, InitError> {
+    let config = read_file(CONFIG).map_err(InitError::ConfigNotFound)?;
+    let cache = read_file(CACHE).map_err(InitError::CacheNotFound)?;
+    config.init_cache(cache).map_err(InitError::CacheInit)?;
+    config
+}
+```
+
+If you feel that your compile times have tanked too much, you can
+expand the macro and emplace it.
+
+### TODO: Conversion graphs
+
+Let's say you have a bunch of errors that have the same variant.  You
+could unify them into a god-enum that processes every error case; it
+cleans up your "throwing" code, at the cost of handling errors being
+insufferably difficult.  Your god-enum can only have traits which
+appeal to the lowest common denominator, so if 99% of your variants
+are `Clone` and `Copy`, but that one obscure variant is not, suddenly
+you made 99% of your program's use much slower.
+
+The solution?
+
+Smaller enum variants for specific error modes.  But that can blow up
+into a huge zoo of enums and conversions, which most programmers
+mostly avoid, by having a Matrioshka of error variants.
+
+The solution?  `goof::conversions!`.  This macro generates the
+appropriate `TryFrom` implementations with a well-defined error type,
+that takes the weight off your shoulders.  Case in point:
+
+```rust
+goof::conversions!  {
+	// Simple one variant to one variant rules.
+	ConfigError => LargerError {
+		::FileNotFound(e) => ::ConfigFileNotFound(e);
+		// Convert a `ConfigError::ConfigVariableRedefined` into `LargerError` by
+		// calling its associated method `LargerError::redefinition` with
+		// the arguments passed in sequentially.
+		//
+		// We can infer that this creates the variant `LargerError::Redefinition`,
+		// which we neeed to tally the variants.
+		::ConfigVariableRedefined {
+			varname: String,
+			first_def: usize,
+			second_def: usize
+		} => ::redefinition(*fields);
+	}
+
+	InitError => LargerError {
+		// Convert the three variants, into the same-named variants of `LargerError`
+		//
+		// The tuple type can specify the names of the arguments
+		// (`StartDisplay`) or could specify the number of the
+		// arguments, as in `AddPanicHook`. If the variant wraps
+		// another struct we can use another pair of :: to destructure
+		// and use the inner object `reason` in the
+		// `LargerError::StartLogging` variant.
+		::{StartDisplay(e), ::StartLogging{ reason }, AddPanicHook(#3)} => *variants
+	}
+
+	std::io::Error => ConfigError {
+		// This will convert a `std::io::Error` into `AddrInUse` variant if and only if
+		// the conditional is true.
+		if matches!(self.kind(), ErrorKind::AddrInUse) then ::AddrInUse
+		// Same, but with short-hand notation
+		// This roughly translates to:
+		// - For an enum whose name is `std::io::error::ErrorKind`
+		// - if the kind is one of the following three primitive variants
+		// - Embed the `std::io::Error` as a whole into `ConfigError::FileNotFound` variant
+		if.kind(Self+Kind::{UnexpectedEOF, PermissionDenied, InvalidFilename}) => ::FileNotFound(self)
+		// Same, but with short-hand notation
+		// This roughly translates to:
+		// - For an enum whose name is `std::io::error::ErrorKind`
+		// - if the kind is one of the following three primitive variants
+		// - Embed the `std::io::Error` as a whole into `ConfigError::FileNotFound` variant
+		if.kind(Self+Kind::{UnexpectedEOF, PermissionDenied, InvalidFilename}) => ::FileNotFound(self)
+	}
+}
+```
+
+This should reduce the amount of repeated boilerplate.
+
+
+### TODO: No-nonsense
+
+Warn the user about common anti-patterns in `Error` design.
+
+- Called your `enum Error`, get a warning saying that this is bad:
+  why?  Because I am fed up with having to rely on the LSP to tell me
+  next to nothing about **what** kind of error I'm dealing with.
+  Inlay hints help a lot, and you just made their job way harder.
+- God `enum Error` with a bunch of common prefixes.  You probably want
+  a bunch of smaller enums with conversion methods.
+
 
 # Progress
 
@@ -88,12 +258,12 @@ detailed notes on how to make the jump.
 # Changelog
 
 -   0.1.0
-    -   Initial, extremely basic implementation of
-        `Mismatch`{.verbatim}, `Outside`{.verbatim} and
-        `Unknown`{.verbatim} structures.
-    -   Initial implementations of `assert_eq`{.verbatim},
-        `assert_in`{.verbatim}, `assert_known_enum`{.verbatim}, and
-        `assert_known`{.verbatim}.
+	-   Initial, extremely basic implementation of
+		`Mismatch`{.verbatim}, `Outside`{.verbatim} and
+		`Unknown`{.verbatim} structures.
+	-   Initial implementations of `assert_eq`{.verbatim},
+		`assert_in`{.verbatim}, `assert_known_enum`{.verbatim}, and
+		`assert_known`{.verbatim}.
 -   0.2.0
-    -   Swapped around arguments in `assert_eq`{.verbatim} for more
-        consistency.
+	-   Swapped around arguments in `assert_eq`{.verbatim} for more
+		consistency.
