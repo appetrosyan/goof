@@ -350,7 +350,8 @@ fn parse_fields(tokens: TokenStream2) -> Result<FieldSet, TokenStream2> {
 }
 
 fn detect_named_fields(tokens: &[TokenTree]) -> bool {
-    // Skip leading attributes `#[...]`, then look for `ident :`
+    // Skip leading attributes `#[...]` and any visibility keyword
+    // (`pub`, `pub(crate)`, `pub(super)`, …), then look for `ident :`.
     let mut i = 0;
     while i < tokens.len() {
         match &tokens[i] {
@@ -364,6 +365,18 @@ fn detect_named_fields(tokens: &[TokenTree]) -> bool {
                         }
                     }
                 }
+            }
+            TokenTree::Ident(id) if *id == "pub" => {
+                i += 1;
+                // Optional `(crate)` / `(super)` / `(in path)` group.
+                if i < tokens.len() {
+                    if let TokenTree::Group(g) = &tokens[i] {
+                        if g.delimiter() == Delimiter::Parenthesis {
+                            i += 1;
+                        }
+                    }
+                }
+                continue;
             }
             TokenTree::Ident(_) => {
                 // Check if the next non-whitespace token is `:`
