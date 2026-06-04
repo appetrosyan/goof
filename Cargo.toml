@@ -1,16 +1,14 @@
 [package]
 name = "goof"
-version = "0.3.3"
+version = "0.3.4"
 authors = ["Aleksandr Petrosyan <appetrosyan@icloud.com>"]
 edition = "2021"
-crate-type = "lib"
 description = "A reusable, composable, aggregate and `no_std`-friendly error library"
 license = "Apache-2.0"
 repository = "https://github.com/appetrosyan/goof"
-features = ["std"]
 
 [workspace]
 members = ["goof-derive"]
 
 [dependencies]
-goof-derive = { path = "goof-derive", version = "0.3.2" }
+goof-derive = { path = "goof-derive", version = "0.3.3" }

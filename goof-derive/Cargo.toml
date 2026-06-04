@@ -1,6 +1,6 @@
 [package]
 name = "goof-derive"
-version = "0.3.2"
+version = "0.3.3"
 authors = ["Aleksandr Petrosyan <appetrosyan@icloud.com>"]
 edition = "2021"
 description = "Derive macros for the goof error library"
@@ -11,5 +11,3 @@ repository = "https://github.com/appetrosyan/goof"
 proc-macro = true
 
 [dependencies]
-quote = "1"
-proc-macro2 = "1"

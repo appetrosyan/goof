@@ -1,13 +1,11 @@
 //! Derive macro for the `goof` error library.
 //!
-//! This implementation avoids the `syn` crate entirely, parsing the
-//! derive input from raw `proc_macro2` token trees.
+//! This implementation avoids the `syn`, `quote`, and `proc-macro2`
+//! crates entirely.  Input is parsed straight from the built-in
+//! `proc_macro` token trees, and output is assembled as source text and
+//! re-lexed with [`str::parse`].
 
-use proc_macro::TokenStream;
-use proc_macro2::{
-    Delimiter, Ident, Literal, Punct, Spacing, Span, TokenStream as TokenStream2, TokenTree,
-};
-use quote::{format_ident, quote};
+use proc_macro::{Delimiter, Ident, Punct, Spacing, TokenStream, TokenTree};
 
 // ============================================================================
 // Entry point
@@ -54,19 +52,29 @@ use quote::{format_ident, quote};
 /// feature-gated behind `#[cfg(error_generic_member_access)]`).
 #[proc_macro_derive(Error, attributes(error, source, from, backtrace))]
 pub fn derive_error(input: TokenStream) -> TokenStream {
-    match expand(input.into()) {
-        Ok(ts) => ts.into(),
-        Err(e) => e.into(),
-    }
+    let src = match expand(input) {
+        Ok(s) => s,
+        Err(s) => s,
+    };
+    src.parse().unwrap_or_else(|_| {
+        // Should never happen, but surface a useful diagnostic instead of
+        // an opaque panic if we ever emit malformed tokens.
+        let msg = format!("goof-derive: failed to lex generated code:\n{src}");
+        error(&msg).parse().unwrap()
+    })
 }
 
 // ============================================================================
-// Error helper (compile_error! without syn)
+// Error helper (compile_error! without a span)
 // ============================================================================
 
-fn error(span: Span, msg: &str) -> TokenStream2 {
-    let msg_lit = Literal::string(msg);
-    quote::quote_spanned!(span => compile_error!(#msg_lit);)
+fn error(msg: &str) -> String {
+    // `{:?}` renders a `&str` as a valid, fully-escaped Rust string literal.
+    format!("compile_error!({msg:?});")
+}
+
+fn ident_is(id: &Ident, s: &str) -> bool {
+    id.to_string() == s
 }
 
 // ============================================================================
@@ -86,7 +94,7 @@ struct DeriveInput {
 struct Field {
     name: Option<Ident>,
     index: usize,
-    ty: TokenStream2,
+    ty: TokenStream,
     attrs: Vec<Attr>,
 }
 
@@ -94,7 +102,7 @@ struct Field {
 #[derive(Clone)]
 struct Attr {
     name: String,
-    tokens: Option<TokenStream2>,
+    tokens: Option<TokenStream>,
 }
 
 enum Body {
@@ -117,24 +125,27 @@ enum FieldSet {
 
 /// Minimal generics representation.
 struct Generics {
-    params: TokenStream2,
-    where_clause: Option<TokenStream2>,
+    params: TokenStream,
+    where_clause: Option<TokenStream>,
 }
 
 /// The parsed contents of `#[error("...", args...)]`.
 struct ErrorMessage {
-    fmt_str: Literal,
+    /// The format string literal, rendered as source text (with quotes).
+    fmt_str: String,
+    /// The unescaped contents of the format string.
     fmt_value: String,
-    args: Vec<TokenStream2>,
+    /// Extra format arguments, each rendered as source text.
+    args: Vec<String>,
 }
 
-type FieldInfo = (Option<Ident>, usize, TokenStream2);
+type FieldInfo = (Option<Ident>, usize, TokenStream);
 
 // ============================================================================
 // Parsing from raw token trees
 // ============================================================================
 
-fn expand(input: TokenStream2) -> Result<TokenStream2, TokenStream2> {
+fn expand(input: TokenStream) -> Result<String, String> {
     let parsed = parse_derive_input(input)?;
 
     let name = &parsed.ident;
@@ -155,7 +166,7 @@ fn expand(input: TokenStream2) -> Result<TokenStream2, TokenStream2> {
     }
 }
 
-fn parse_derive_input(input: TokenStream2) -> Result<DeriveInput, TokenStream2> {
+fn parse_derive_input(input: TokenStream) -> Result<DeriveInput, String> {
     let mut tokens = input.into_iter().peekable();
 
     // Collect outer attributes and skip `pub`, `pub(crate)`, etc.
@@ -171,7 +182,9 @@ fn parse_derive_input(input: TokenStream2) -> Result<DeriveInput, TokenStream2> 
                     }
                 }
             }
-            Some(TokenTree::Ident(id)) if *id == "pub" || *id == "crate" || *id == "super" => {
+            Some(TokenTree::Ident(id))
+                if ident_is(id, "pub") || ident_is(id, "crate") || ident_is(id, "super") =>
+            {
                 let _vis = tokens.next();
                 // Eat `(crate)` or `(super)` or `(in path)` if present.
                 if let Some(TokenTree::Group(g)) = tokens.peek() {
@@ -187,13 +200,13 @@ fn parse_derive_input(input: TokenStream2) -> Result<DeriveInput, TokenStream2> 
     // Expect `struct` or `enum`
     let kind = match tokens.next() {
         Some(TokenTree::Ident(id)) => id.to_string(),
-        _ => return Err(error(Span::call_site(), "expected `struct` or `enum`")),
+        _ => return Err(error("expected `struct` or `enum`")),
     };
 
     // Name
     let ident = match tokens.next() {
         Some(TokenTree::Ident(id)) => id,
-        _ => return Err(error(Span::call_site(), "expected type name")),
+        _ => return Err(error("expected type name")),
     };
 
     // Generics (everything before the body or semicolon)
@@ -202,7 +215,7 @@ fn parse_derive_input(input: TokenStream2) -> Result<DeriveInput, TokenStream2> 
     let body = match kind.as_str() {
         "struct" => Body::Struct(parse_fields(body_tokens)?),
         "enum" => Body::Enum(parse_enum_variants(body_tokens)?),
-        _ => return Err(error(ident.span(), "derive(Error) does not support unions")),
+        _ => return Err(error("derive(Error) does not support unions")),
     };
 
     Ok(DeriveInput {
@@ -213,7 +226,7 @@ fn parse_derive_input(input: TokenStream2) -> Result<DeriveInput, TokenStream2> 
     })
 }
 
-fn parse_attr(tokens: TokenStream2) -> Attr {
+fn parse_attr(tokens: TokenStream) -> Attr {
     let mut iter = tokens.into_iter();
     let name = match iter.next() {
         Some(TokenTree::Ident(id)) => id.to_string(),
@@ -224,7 +237,7 @@ fn parse_attr(tokens: TokenStream2) -> Attr {
             };
         }
     };
-    let rest: TokenStream2 = iter.collect();
+    let rest: TokenStream = iter.collect();
     let tokens = if rest.is_empty() {
         None
     } else {
@@ -239,13 +252,13 @@ fn parse_attr(tokens: TokenStream2) -> Attr {
                 };
                 Some(g.stream())
             } else {
-                let all: TokenStream2 = std::iter::once(TokenTree::Group(g.clone()))
+                let all: TokenStream = std::iter::once(TokenTree::Group(g.clone()))
                     .chain(rest_iter)
                     .collect();
                 Some(all)
             }
         } else {
-            let all: TokenStream2 = rest_iter.collect();
+            let all: TokenStream = rest_iter.collect();
             if all.is_empty() { None } else { Some(all) }
         }
     };
@@ -253,9 +266,9 @@ fn parse_attr(tokens: TokenStream2) -> Attr {
 }
 
 fn parse_generics_and_body(
-    tokens: &mut std::iter::Peekable<proc_macro2::token_stream::IntoIter>,
-) -> Result<(Generics, TokenStream2), TokenStream2> {
-    let mut params = TokenStream2::new();
+    tokens: &mut std::iter::Peekable<proc_macro::token_stream::IntoIter>,
+) -> Result<(Generics, TokenStream), String> {
+    let mut params = TokenStream::new();
     let mut where_clause = None;
 
     // Check for `<...>` generics
@@ -282,11 +295,11 @@ fn parse_generics_and_body(
     // Now we might see `where ...` before `{` / `(` / `;`
     let mut where_tokens = Vec::new();
     let mut collecting_where = false;
-    let mut body = TokenStream2::new();
+    let mut body = TokenStream::new();
 
     while let Some(tok) = tokens.peek() {
         match tok {
-            TokenTree::Ident(id) if *id == "where" => {
+            TokenTree::Ident(id) if ident_is(id, "where") => {
                 collecting_where = true;
                 tokens.next(); // consume `where`
             }
@@ -328,7 +341,7 @@ fn parse_generics_and_body(
     ))
 }
 
-fn parse_fields(tokens: TokenStream2) -> Result<FieldSet, TokenStream2> {
+fn parse_fields(tokens: TokenStream) -> Result<FieldSet, String> {
     if tokens.is_empty() {
         return Ok(FieldSet::Unit);
     }
@@ -366,7 +379,7 @@ fn detect_named_fields(tokens: &[TokenTree]) -> bool {
                     }
                 }
             }
-            TokenTree::Ident(id) if *id == "pub" => {
+            TokenTree::Ident(id) if ident_is(id, "pub") => {
                 i += 1;
                 // Optional `(crate)` / `(super)` / `(in path)` group.
                 if i < tokens.len() {
@@ -395,7 +408,7 @@ fn detect_named_fields(tokens: &[TokenTree]) -> bool {
     false
 }
 
-fn parse_named_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, TokenStream2> {
+fn parse_named_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, String> {
     let mut fields = Vec::new();
     let mut i = 0;
     let mut idx = 0;
@@ -424,7 +437,7 @@ fn parse_named_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, TokenStream2> 
         // Skip visibility keywords like `pub`, `pub(crate)`
         if i < tokens.len() {
             if let TokenTree::Ident(id) = &tokens[i] {
-                if *id == "pub" {
+                if ident_is(id, "pub") {
                     i += 1;
                     if i < tokens.len() {
                         if let TokenTree::Group(g) = &tokens[i] {
@@ -470,7 +483,7 @@ fn parse_named_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, TokenStream2> 
             i += 1;
         }
 
-        let ty: TokenStream2 = ty_tokens.into_iter().collect();
+        let ty: TokenStream = ty_tokens.into_iter().collect();
         fields.push(Field {
             name: Some(name),
             index: idx,
@@ -483,7 +496,7 @@ fn parse_named_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, TokenStream2> 
     Ok(FieldSet::Named(fields))
 }
 
-fn parse_unnamed_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, TokenStream2> {
+fn parse_unnamed_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, String> {
     let mut fields = Vec::new();
     let mut i = 0;
     let mut idx = 0;
@@ -512,7 +525,7 @@ fn parse_unnamed_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, TokenStream2
         // Skip visibility keywords
         if i < tokens.len() {
             if let TokenTree::Ident(id) = &tokens[i] {
-                if *id == "pub" {
+                if ident_is(id, "pub") {
                     i += 1;
                     if i < tokens.len() {
                         if let TokenTree::Group(g) = &tokens[i] {
@@ -531,8 +544,7 @@ fn parse_unnamed_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, TokenStream2
 
         // Type tokens — collect until `,` at depth 0 or end.
         // We need to track `<>` depth because types like
-        // `Vec<String>` contain commas in generic args... wait no
-        // they don't, but `HashMap<K, V>` does. Track angle brackets.
+        // `HashMap<K, V>` contain commas in generic args.
         let mut ty_tokens = Vec::new();
         let mut angle_depth = 0u32;
         while i < tokens.len() {
@@ -564,7 +576,7 @@ fn parse_unnamed_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, TokenStream2
             break;
         }
 
-        let ty: TokenStream2 = ty_tokens.into_iter().collect();
+        let ty: TokenStream = ty_tokens.into_iter().collect();
         fields.push(Field {
             name: None,
             index: idx,
@@ -577,7 +589,7 @@ fn parse_unnamed_fields(tokens: Vec<TokenTree>) -> Result<FieldSet, TokenStream2
     Ok(FieldSet::Unnamed(fields))
 }
 
-fn parse_enum_variants(tokens: TokenStream2) -> Result<Vec<Variant>, TokenStream2> {
+fn parse_enum_variants(tokens: TokenStream) -> Result<Vec<Variant>, String> {
     let mut variants = Vec::new();
     let token_vec: Vec<TokenTree> = tokens.into_iter().collect();
     let mut i = 0;
@@ -677,37 +689,32 @@ fn parse_enum_variants(tokens: TokenStream2) -> Result<Vec<Variant>, TokenStream
 // Generics handling
 // ============================================================================
 
-fn split_generics(generics: &Generics) -> (TokenStream2, TokenStream2, TokenStream2) {
-    if generics.params.is_empty() {
-        let wc = generics
-            .where_clause
-            .as_ref()
-            .map(|w| quote!(where #w))
-            .unwrap_or_default();
-        return (TokenStream2::new(), TokenStream2::new(), wc);
-    }
-
-    let params = &generics.params;
-
-    // For impl generics, we keep everything as-is.
-    let impl_generics = quote!(<#params>);
-
-    // For type generics, strip bounds: keep only names and lifetimes.
-    let ty_generics_inner = strip_bounds(params.clone());
-    let ty_generics = quote!(<#ty_generics_inner>);
-
-    let wc = generics
+fn split_generics(generics: &Generics) -> (String, String, String) {
+    let where_clause = generics
         .where_clause
         .as_ref()
-        .map(|w| quote!(where #w))
+        .map(|w| format!("where {w}"))
         .unwrap_or_default();
 
-    (impl_generics, ty_generics, wc)
+    if generics.params.is_empty() {
+        return (String::new(), String::new(), where_clause);
+    }
+
+    let params = generics.params.to_string();
+
+    // For impl generics, we keep everything as-is.
+    let impl_generics = format!("<{params}>");
+
+    // For type generics, strip bounds: keep only names and lifetimes.
+    let ty_generics_inner = strip_bounds(generics.params.clone());
+    let ty_generics = format!("<{ty_generics_inner}>");
+
+    (impl_generics, ty_generics, where_clause)
 }
 
 /// Strip trait bounds from generic parameters, keeping only the names.
 /// `T: Display + Copy` → `T`, `'a: 'b` → `'a`, `const N: usize` → `N`
-fn strip_bounds(params: TokenStream2) -> TokenStream2 {
+fn strip_bounds(params: TokenStream) -> String {
     let mut result = Vec::<TokenTree>::new();
     let mut iter = params.into_iter().peekable();
 
@@ -726,7 +733,7 @@ fn strip_bounds(params: TokenStream2) -> TokenStream2 {
             skip_until_comma(&mut iter);
         }
         // Check for `const N: ty`
-        else if matches!(iter.peek(), Some(TokenTree::Ident(id)) if *id == "const") {
+        else if matches!(iter.peek(), Some(TokenTree::Ident(id)) if ident_is(id, "const")) {
             iter.next(); // skip `const`
             if let Some(name) = iter.next() {
                 param_tokens.push(name);
@@ -757,10 +764,10 @@ fn strip_bounds(params: TokenStream2) -> TokenStream2 {
         }
     }
 
-    result.into_iter().collect()
+    result.into_iter().collect::<TokenStream>().to_string()
 }
 
-fn skip_until_comma(iter: &mut std::iter::Peekable<proc_macro2::token_stream::IntoIter>) {
+fn skip_until_comma(iter: &mut std::iter::Peekable<proc_macro::token_stream::IntoIter>) {
     let mut depth = 0u32;
     while let Some(tok) = iter.peek() {
         match tok {
@@ -792,44 +799,46 @@ fn skip_until_comma(iter: &mut std::iter::Peekable<proc_macro2::token_stream::In
 
 fn expand_struct(
     name: &Ident,
-    impl_generics: &TokenStream2,
-    ty_generics: &TokenStream2,
-    where_clause: &TokenStream2,
+    impl_generics: &str,
+    ty_generics: &str,
+    where_clause: &str,
     attrs: &[Attr],
     fields: &FieldSet,
-) -> Result<TokenStream2, TokenStream2> {
+) -> Result<String, String> {
     let transparent = is_transparent(attrs);
 
     // -- Display --
     let display_impl = if transparent {
-        let field = single_field(fields, name.span())?;
+        let field = single_field(fields)?;
         let accessor = field_accessor(&field.0, field.1);
-        quote! {
-            #[automatically_derived]
-            impl #impl_generics ::core::fmt::Display for #name #ty_generics #where_clause {
-                fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                    ::core::fmt::Display::fmt(&self.#accessor, f)
-                }
-            }
-        }
+        format!(
+            "#[automatically_derived]
+impl {impl_generics} ::core::fmt::Display for {name} {ty_generics} {where_clause} {{
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{
+        ::core::fmt::Display::fmt(&self.{accessor}, f)
+    }}
+}}
+"
+        )
     } else if let Some(fmt) = find_error_message(attrs)? {
-        let body = format_string_to_display_body(&fmt, fields)?;
-        quote! {
-            #[automatically_derived]
-            impl #impl_generics ::core::fmt::Display for #name #ty_generics #where_clause {
-                fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                    #body
-                }
-            }
-        }
+        let body = format_string_to_display_body(&fmt, fields);
+        format!(
+            "#[automatically_derived]
+impl {impl_generics} ::core::fmt::Display for {name} {ty_generics} {where_clause} {{
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{
+        {body}
+    }}
+}}
+"
+        )
     } else {
         // No #[error] attribute — caller must provide Display manually.
-        TokenStream2::new()
+        String::new()
     };
 
     // -- source / from / backtrace analysis --
     let source_field = if transparent {
-        Some(single_field(fields, name.span())?)
+        Some(single_field(fields)?)
     } else {
         find_source_field(fields)
     };
@@ -839,46 +848,43 @@ fn expand_struct(
     // -- Error impl --
     let source_body = if let Some(ref sf) = source_field {
         let accessor = field_accessor(&sf.0, sf.1);
-        quote! {
-            fn source(&self) -> ::core::option::Option<&(dyn ::core::error::Error + 'static)> {
-                ::core::option::Option::Some(&self.#accessor)
-            }
-        }
+        format!(
+            "    fn source(&self) -> ::core::option::Option<&(dyn ::core::error::Error + 'static)> {{
+        ::core::option::Option::Some(&self.{accessor})
+    }}
+"
+        )
     } else {
-        TokenStream2::new()
+        String::new()
     };
 
     let provide_body = generate_provide_struct(&source_field, &backtrace_field);
 
-    let error_impl = quote! {
-        #[automatically_derived]
-        impl #impl_generics ::core::error::Error for #name #ty_generics #where_clause {
-            #source_body
-            #provide_body
-        }
-    };
+    let error_impl = format!(
+        "#[automatically_derived]
+impl {impl_generics} ::core::error::Error for {name} {ty_generics} {where_clause} {{
+{source_body}{provide_body}}}
+"
+    );
 
     // -- From impl --
     let from_impl = if let Some(ref ff) = from_field {
-        let ty = &ff.2;
+        let ty = ff.2.to_string();
         let construct = struct_construct_from(fields, ff.1, &backtrace_field);
-        quote! {
-            #[automatically_derived]
-            impl #impl_generics ::core::convert::From<#ty> for #name #ty_generics #where_clause {
-                fn from(source: #ty) -> Self {
-                    #construct
-                }
-            }
-        }
+        format!(
+            "#[automatically_derived]
+impl {impl_generics} ::core::convert::From<{ty}> for {name} {ty_generics} {where_clause} {{
+    fn from(source: {ty}) -> Self {{
+        {construct}
+    }}
+}}
+"
+        )
     } else {
-        TokenStream2::new()
+        String::new()
     };
 
-    Ok(quote! {
-        #display_impl
-        #error_impl
-        #from_impl
-    })
+    Ok(format!("{display_impl}{error_impl}{from_impl}"))
 }
 
 // ============================================================================
@@ -887,11 +893,11 @@ fn expand_struct(
 
 fn expand_enum(
     name: &Ident,
-    impl_generics: &TokenStream2,
-    ty_generics: &TokenStream2,
-    where_clause: &TokenStream2,
+    impl_generics: &str,
+    ty_generics: &str,
+    where_clause: &str,
     variants: &[Variant],
-) -> Result<TokenStream2, TokenStream2> {
+) -> Result<String, String> {
     let mut display_arms = Vec::new();
     let mut source_arms = Vec::new();
     let mut from_impls = Vec::new();
@@ -904,30 +910,24 @@ fn expand_enum(
 
         // -- Display arm --
         if transparent {
-            let field = single_field(fields, variant.ident.span())?;
+            let field = single_field(fields)?;
             let (pat, bindings) = variant_pattern(name, vname, fields);
             let binding = &bindings[field.1];
-            display_arms.push(quote! {
-                #pat => ::core::fmt::Display::fmt(#binding, f),
-            });
+            display_arms.push(format!("{pat} => ::core::fmt::Display::fmt({binding}, f),"));
         } else if let Some(fmt) = find_error_message(&variant.attrs)? {
             let (pat, bindings) = variant_pattern(name, vname, fields);
-            let body = format_string_to_write(&fmt, fields, &bindings)?;
-            display_arms.push(quote! {
-                #pat => { #body }
-            });
+            let body = format_string_to_write(&fmt, fields, &bindings);
+            display_arms.push(format!("{pat} => {{ {body} }}"));
         } else {
             // No message — use variant name as fallback.
             let (pat, _bindings) = variant_pattern(name, vname, fields);
             let msg = vname.to_string();
-            display_arms.push(quote! {
-                #pat => f.write_str(#msg),
-            });
+            display_arms.push(format!("{pat} => f.write_str({msg:?}),"));
         }
 
         // -- Source arm --
         let source_field = if transparent {
-            Some(single_field(fields, variant.ident.span())?)
+            Some(single_field(fields)?)
         } else {
             find_source_field(fields)
         };
@@ -935,9 +935,7 @@ fn expand_enum(
         if let Some(ref sf) = source_field {
             let (pat, bindings) = variant_pattern(name, vname, fields);
             let binding = &bindings[sf.1];
-            source_arms.push(quote! {
-                #pat => ::core::option::Option::Some(#binding),
-            });
+            source_arms.push(format!("{pat} => ::core::option::Option::Some({binding}),"));
         }
 
         // -- Provide arm --
@@ -951,78 +949,81 @@ fn expand_enum(
         // -- From impl --
         let from_field = find_from_field(fields);
         if let Some(ref ff) = from_field {
-            let ty = &ff.2;
+            let ty = ff.2.to_string();
             let construct = enum_construct_from(name, vname, fields, ff.1, &backtrace_field_v);
-            from_impls.push(quote! {
-                #[automatically_derived]
-                impl #impl_generics ::core::convert::From<#ty> for #name #ty_generics #where_clause {
-                    fn from(source: #ty) -> Self {
-                        #construct
-                    }
-                }
-            });
+            from_impls.push(format!(
+                "#[automatically_derived]
+impl {impl_generics} ::core::convert::From<{ty}> for {name} {ty_generics} {where_clause} {{
+    fn from(source: {ty}) -> Self {{
+        {construct}
+    }}
+}}
+"
+            ));
         }
     }
 
     // -- Display impl --
     let display_impl = if display_arms.is_empty() {
-        TokenStream2::new()
+        String::new()
     } else {
-        quote! {
-            #[automatically_derived]
-            impl #impl_generics ::core::fmt::Display for #name #ty_generics #where_clause {
-                fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                    match self {
-                        #(#display_arms)*
-                    }
-                }
-            }
-        }
+        let arms = display_arms.join("\n            ");
+        format!(
+            "#[automatically_derived]
+impl {impl_generics} ::core::fmt::Display for {name} {ty_generics} {where_clause} {{
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{
+        match self {{
+            {arms}
+        }}
+    }}
+}}
+"
+        )
     };
 
     // -- Error impl --
     let source_method = if source_arms.is_empty() {
-        TokenStream2::new()
+        String::new()
     } else {
-        quote! {
-            fn source(&self) -> ::core::option::Option<&(dyn ::core::error::Error + 'static)> {
-                match self {
-                    #(#source_arms)*
-                    #[allow(unreachable_patterns)]
-                    _ => ::core::option::Option::None,
-                }
-            }
-        }
+        let arms = source_arms.join("\n                ");
+        format!(
+            "    fn source(&self) -> ::core::option::Option<&(dyn ::core::error::Error + 'static)> {{
+        match self {{
+            {arms}
+            #[allow(unreachable_patterns)]
+            _ => ::core::option::Option::None,
+        }}
+    }}
+"
+        )
     };
 
     let provide_method = if provide_arms.is_empty() {
-        TokenStream2::new()
+        String::new()
     } else {
-        quote! {
-            #[cfg(error_generic_member_access)]
-            fn provide<'_request>(&'_request self, _request: &mut ::core::error::Request<'_request>) {
-                match self {
-                    #(#provide_arms)*
-                    #[allow(unreachable_patterns)]
-                    _ => {}
-                }
-            }
-        }
+        let arms = provide_arms.join("\n                ");
+        format!(
+            "    #[cfg(error_generic_member_access)]
+    fn provide<'_request>(&'_request self, _request: &mut ::core::error::Request<'_request>) {{
+        match self {{
+            {arms}
+            #[allow(unreachable_patterns)]
+            _ => {{}}
+        }}
+    }}
+"
+        )
     };
 
-    let error_impl = quote! {
-        #[automatically_derived]
-        impl #impl_generics ::core::error::Error for #name #ty_generics #where_clause {
-            #source_method
-            #provide_method
-        }
-    };
+    let error_impl = format!(
+        "#[automatically_derived]
+impl {impl_generics} ::core::error::Error for {name} {ty_generics} {where_clause} {{
+{source_method}{provide_method}}}
+"
+    );
 
-    Ok(quote! {
-        #display_impl
-        #error_impl
-        #(#from_impls)*
-    })
+    let from_impls = from_impls.join("");
+    Ok(format!("{display_impl}{error_impl}{from_impls}"))
 }
 
 // ============================================================================
@@ -1039,7 +1040,7 @@ fn is_transparent(attrs: &[Attr]) -> bool {
     })
 }
 
-fn find_error_message(attrs: &[Attr]) -> Result<Option<ErrorMessage>, TokenStream2> {
+fn find_error_message(attrs: &[Attr]) -> Result<Option<ErrorMessage>, String> {
     for attr in attrs {
         if attr.name != "error" {
             continue;
@@ -1057,17 +1058,14 @@ fn find_error_message(attrs: &[Attr]) -> Result<Option<ErrorMessage>, TokenStrea
     Ok(None)
 }
 
-fn parse_error_message(tokens: TokenStream2) -> Result<ErrorMessage, TokenStream2> {
+fn parse_error_message(tokens: TokenStream) -> Result<ErrorMessage, String> {
     let mut iter = tokens.into_iter().peekable();
 
     // First token should be a string literal.
     let fmt_lit = match iter.next() {
         Some(TokenTree::Literal(lit)) => lit,
         _ => {
-            return Err(error(
-                Span::call_site(),
-                "expected format string in #[error(\"...\")]",
-            ));
+            return Err(error("expected format string in #[error(\"...\")]"));
         }
     };
 
@@ -1116,8 +1114,8 @@ fn parse_error_message(tokens: TokenStream2) -> Result<ErrorMessage, TokenStream
                     }
                 }
                 if !expr_tokens.is_empty() {
-                    let ts: TokenStream2 = expr_tokens.into_iter().collect();
-                    args.push(ts);
+                    let ts: TokenStream = expr_tokens.into_iter().collect();
+                    args.push(ts.to_string());
                 }
             } else {
                 break;
@@ -1128,7 +1126,7 @@ fn parse_error_message(tokens: TokenStream2) -> Result<ErrorMessage, TokenStream
     }
 
     Ok(ErrorMessage {
-        fmt_str: fmt_lit,
+        fmt_str: fmt_lit.to_string(),
         fmt_value,
         args,
     })
@@ -1181,7 +1179,7 @@ fn find_source_field(fields: &FieldSet) -> Option<FieldInfo> {
             return Some((field.name.clone(), field.index, field.ty.clone()));
         }
         if let Some(ref ident) = field.name {
-            if ident == "source" {
+            if ident_is(ident, "source") {
                 return Some((Some(ident.clone()), field.index, field.ty.clone()));
             }
         }
@@ -1210,7 +1208,7 @@ fn find_backtrace_field(fields: &FieldSet) -> Option<FieldInfo> {
     None
 }
 
-fn type_ends_with_backtrace(ty: &TokenStream2) -> bool {
+fn type_ends_with_backtrace(ty: &TokenStream) -> bool {
     let mut last_ident = None;
     for tok in ty.clone().into_iter() {
         if let TokenTree::Ident(id) = tok {
@@ -1220,10 +1218,10 @@ fn type_ends_with_backtrace(ty: &TokenStream2) -> bool {
     last_ident.as_deref() == Some("Backtrace")
 }
 
-fn single_field(fields: &FieldSet, span: Span) -> Result<FieldInfo, TokenStream2> {
+fn single_field(fields: &FieldSet) -> Result<FieldInfo, String> {
     let fs = fields_iter(fields);
     if fs.is_empty() {
-        return Err(error(span, "transparent requires exactly one field"));
+        return Err(error("transparent requires exactly one field"));
     }
 
     let first = &fs[0];
@@ -1236,14 +1234,10 @@ fn single_field(fields: &FieldSet, span: Span) -> Result<FieldInfo, TokenStream2
             type_ends_with_backtrace(&first.ty) || has_attr(&first.attrs, "backtrace");
 
         if !second_is_backtrace && !first_is_backtrace {
-            return Err(error(
-                span,
-                "transparent requires exactly one non-backtrace field",
-            ));
+            return Err(error("transparent requires exactly one non-backtrace field"));
         }
         if fs.len() > 2 {
             return Err(error(
-                span,
                 "transparent requires at most two fields (source + backtrace)",
             ));
         }
@@ -1255,13 +1249,10 @@ fn single_field(fields: &FieldSet, span: Span) -> Result<FieldInfo, TokenStream2
     Ok((first.name.clone(), 0, first.ty.clone()))
 }
 
-fn field_accessor(ident: &Option<Ident>, idx: usize) -> TokenStream2 {
+fn field_accessor(ident: &Option<Ident>, idx: usize) -> String {
     match ident {
-        Some(id) => quote!(#id),
-        None => {
-            let index = proc_macro2::Literal::usize_unsuffixed(idx);
-            quote!(#index)
-        }
+        Some(id) => id.to_string(),
+        None => idx.to_string(),
     }
 }
 
@@ -1269,34 +1260,30 @@ fn field_accessor(ident: &Option<Ident>, idx: usize) -> TokenStream2 {
 // Format string → Display body generation
 // ============================================================================
 
-fn format_string_to_display_body(
-    msg: &ErrorMessage,
-    fields: &FieldSet,
-) -> Result<TokenStream2, TokenStream2> {
-    let fmt_str = &msg.fmt_str;
+fn format_string_to_display_body(msg: &ErrorMessage, fields: &FieldSet) -> String {
     let extra_args = rewrite_dot_args(&msg.args);
     let field_args = extract_field_args(&msg.fmt_value, fields);
-
-    Ok(quote! {
-        write!(f, #fmt_str, #(#field_args,)* #(#extra_args,)*)
-    })
+    write_call(&msg.fmt_str, field_args.iter().chain(extra_args.iter()))
 }
 
-fn format_string_to_write(
-    msg: &ErrorMessage,
-    fields: &FieldSet,
-    bindings: &[Ident],
-) -> Result<TokenStream2, TokenStream2> {
-    let fmt_str = &msg.fmt_str;
+fn format_string_to_write(msg: &ErrorMessage, fields: &FieldSet, bindings: &[String]) -> String {
     let extra_args = rewrite_dot_args_enum(&msg.args, fields, bindings);
     let field_args = extract_field_args_enum(&msg.fmt_value, fields, bindings);
-
-    Ok(quote! {
-        write!(f, #fmt_str, #(#field_args,)* #(#extra_args,)*)
-    })
+    write_call(&msg.fmt_str, field_args.iter().chain(extra_args.iter()))
 }
 
-fn extract_field_args(fmt_value: &str, fields: &FieldSet) -> Vec<TokenStream2> {
+/// Build a `write!(f, "fmt", a, b, ...)` invocation.
+fn write_call<'a>(fmt_str: &str, args: impl Iterator<Item = &'a String>) -> String {
+    let mut s = format!("write!(f, {fmt_str}");
+    for a in args {
+        s.push_str(", ");
+        s.push_str(a);
+    }
+    s.push(')');
+    s
+}
+
+fn extract_field_args(fmt_value: &str, fields: &FieldSet) -> Vec<String> {
     let mut args = Vec::new();
     let field_names = collect_field_names(fields);
 
@@ -1309,27 +1296,21 @@ fn extract_field_args(fmt_value: &str, fields: &FieldSet) -> Vec<TokenStream2> {
             continue;
         }
         if field_names.contains(&base.to_string()) {
-            let id = format_ident!("{}", base);
-            args.push(quote!(#id = &self.#id));
+            args.push(format!("{base} = &self.{base}"));
         }
     }
 
     let max_idx = max_numeric_placeholder(fmt_value, field_count(fields));
     if let Some(max) = max_idx {
         for i in 0..=max {
-            let index = proc_macro2::Literal::usize_unsuffixed(i);
-            args.insert(i, quote!(&self.#index));
+            args.insert(i, format!("&self.{i}"));
         }
     }
 
     args
 }
 
-fn extract_field_args_enum(
-    fmt_value: &str,
-    fields: &FieldSet,
-    bindings: &[Ident],
-) -> Vec<TokenStream2> {
+fn extract_field_args_enum(fmt_value: &str, fields: &FieldSet, bindings: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     let field_names = collect_field_names(fields);
 
@@ -1343,8 +1324,7 @@ fn extract_field_args_enum(
         }
         if field_names.contains(&base.to_string()) {
             if let Some(binding) = find_binding_for_name(fields, bindings, base) {
-                let id = format_ident!("{}", base);
-                args.push(quote!(#id = #binding));
+                args.push(format!("{base} = {binding}"));
             }
         }
     }
@@ -1353,8 +1333,7 @@ fn extract_field_args_enum(
     if let Some(max) = max_idx {
         for i in 0..=max {
             if i < bindings.len() {
-                let binding = &bindings[i];
-                args.insert(i, quote!(#binding));
+                args.insert(i, bindings[i].clone());
             }
         }
     }
@@ -1363,51 +1342,35 @@ fn extract_field_args_enum(
 }
 
 /// Rewrite extra args that contain `.field` references for struct context.
-fn rewrite_dot_args(args: &[TokenStream2]) -> Vec<TokenStream2> {
+fn rewrite_dot_args(args: &[String]) -> Vec<String> {
     args.iter()
-        .map(|expr| {
-            let s = expr.to_string();
+        .map(|s| {
             // If the expression starts with `.`, it's a field reference.
             if s.starts_with('.') {
-                let rewritten = format!("self{}", s);
-                if let Ok(ts) = rewritten.parse::<TokenStream2>() {
-                    return ts;
-                }
+                return format!("self{s}");
             }
             // Check for `name = .field` pattern
             if let Some(eq_pos) = s.find('=') {
                 let lhs = s[..eq_pos].trim();
                 let rhs = s[eq_pos + 1..].trim();
                 if rhs.starts_with('.') {
-                    let rewritten_rhs = format!("self{}", rhs);
-                    let full = format!("{} = {}", lhs, rewritten_rhs);
-                    if let Ok(ts) = full.parse::<TokenStream2>() {
-                        return ts;
-                    }
+                    return format!("{lhs} = self{rhs}");
                 }
             }
-            expr.clone()
+            s.clone()
         })
         .collect()
 }
 
 /// Rewrite extra args that contain `.field` references for enum context.
-fn rewrite_dot_args_enum(
-    args: &[TokenStream2],
-    fields: &FieldSet,
-    bindings: &[Ident],
-) -> Vec<TokenStream2> {
+fn rewrite_dot_args_enum(args: &[String], fields: &FieldSet, bindings: &[String]) -> Vec<String> {
     args.iter()
-        .map(|expr| {
-            let s = expr.to_string();
+        .map(|s| {
             if let Some(without_dot) = s.strip_prefix('.') {
                 let root = without_dot.split('.').next().unwrap_or(without_dot);
                 if let Some(binding) = find_binding_for_name_or_idx(fields, bindings, root) {
                     let rest = &without_dot[root.len()..];
-                    let rewritten = format!("{}{}", binding, rest);
-                    if let Ok(ts) = rewritten.parse::<TokenStream2>() {
-                        return ts;
-                    }
+                    return format!("{binding}{rest}");
                 }
             }
             // Check for `name = .field` pattern
@@ -1418,15 +1381,11 @@ fn rewrite_dot_args_enum(
                     let root = without_dot.split('.').next().unwrap_or(without_dot);
                     if let Some(binding) = find_binding_for_name_or_idx(fields, bindings, root) {
                         let rest = &without_dot[root.len()..];
-                        let rewritten_rhs = format!("{}{}", binding, rest);
-                        let full = format!("{} = {}", lhs, rewritten_rhs);
-                        if let Ok(ts) = full.parse::<TokenStream2>() {
-                            return ts;
-                        }
+                        return format!("{lhs} = {binding}{rest}");
                     }
                 }
             }
-            expr.clone()
+            s.clone()
         })
         .collect()
 }
@@ -1439,30 +1398,36 @@ fn variant_pattern(
     enum_name: &Ident,
     variant_name: &Ident,
     fields: &FieldSet,
-) -> (TokenStream2, Vec<Ident>) {
+) -> (String, Vec<String>) {
     match fields {
         FieldSet::Named(f) => {
             let mut bindings = Vec::new();
             let mut pats = Vec::new();
             for field in f {
                 let name = field.name.as_ref().unwrap();
-                let binding = format_ident!("__self_{}", name);
-                pats.push(quote!(#name: ref #binding));
+                let binding = format!("__self_{name}");
+                pats.push(format!("{name}: ref {binding}"));
                 bindings.push(binding);
             }
-            (quote!(#enum_name::#variant_name { #(#pats),* }), bindings)
+            (
+                format!("{enum_name}::{variant_name} {{ {} }}", pats.join(", ")),
+                bindings,
+            )
         }
         FieldSet::Unnamed(f) => {
             let mut bindings = Vec::new();
             let mut pats = Vec::new();
             for (i, _field) in f.iter().enumerate() {
-                let binding = format_ident!("__self_{}", i);
-                pats.push(quote!(ref #binding));
+                let binding = format!("__self_{i}");
+                pats.push(format!("ref {binding}"));
                 bindings.push(binding);
             }
-            (quote!(#enum_name::#variant_name(#(#pats),*)), bindings)
+            (
+                format!("{enum_name}::{variant_name}({})", pats.join(", ")),
+                bindings,
+            )
         }
-        FieldSet::Unit => (quote!(#enum_name::#variant_name), Vec::new()),
+        FieldSet::Unit => (format!("{enum_name}::{variant_name}"), Vec::new()),
     }
 }
 
@@ -1474,44 +1439,44 @@ fn struct_construct_from(
     fields: &FieldSet,
     from_idx: usize,
     backtrace_field: &Option<FieldInfo>,
-) -> TokenStream2 {
+) -> String {
     match fields {
         FieldSet::Named(f) => {
-            let inits: Vec<_> = f
+            let inits: Vec<String> = f
                 .iter()
                 .enumerate()
                 .map(|(i, field)| {
                     let name = field.name.as_ref().unwrap();
                     if i == from_idx {
-                        quote!(#name: source)
+                        format!("{name}: source")
                     } else if backtrace_field.as_ref().map(|(_, bi, _)| *bi) == Some(i) {
-                        let bt_ty = &field.ty;
-                        quote!(#name: #bt_ty::capture())
+                        let bt_ty = field.ty.to_string();
+                        format!("{name}: {bt_ty}::capture()")
                     } else {
-                        quote!(#name: ::core::default::Default::default())
+                        format!("{name}: ::core::default::Default::default()")
                     }
                 })
                 .collect();
-            quote!(Self { #(#inits),* })
+            format!("Self {{ {} }}", inits.join(", "))
         }
         FieldSet::Unnamed(f) => {
-            let inits: Vec<_> = f
+            let inits: Vec<String> = f
                 .iter()
                 .enumerate()
                 .map(|(i, field)| {
                     if i == from_idx {
-                        quote!(source)
+                        "source".to_string()
                     } else if backtrace_field.as_ref().map(|(_, bi, _)| *bi) == Some(i) {
-                        let bt_ty = &field.ty;
-                        quote!(#bt_ty::capture())
+                        let bt_ty = field.ty.to_string();
+                        format!("{bt_ty}::capture()")
                     } else {
-                        quote!(::core::default::Default::default())
+                        "::core::default::Default::default()".to_string()
                     }
                 })
                 .collect();
-            quote!(Self(#(#inits),*))
+            format!("Self({})", inits.join(", "))
         }
-        FieldSet::Unit => quote!(Self),
+        FieldSet::Unit => "Self".to_string(),
     }
 }
 
@@ -1521,44 +1486,44 @@ fn enum_construct_from(
     fields: &FieldSet,
     from_idx: usize,
     backtrace_field: &Option<FieldInfo>,
-) -> TokenStream2 {
+) -> String {
     match fields {
         FieldSet::Named(f) => {
-            let inits: Vec<_> = f
+            let inits: Vec<String> = f
                 .iter()
                 .enumerate()
                 .map(|(i, field)| {
                     let name = field.name.as_ref().unwrap();
                     if i == from_idx {
-                        quote!(#name: source)
+                        format!("{name}: source")
                     } else if backtrace_field.as_ref().map(|(_, bi, _)| *bi) == Some(i) {
-                        let bt_ty = &field.ty;
-                        quote!(#name: #bt_ty::capture())
+                        let bt_ty = field.ty.to_string();
+                        format!("{name}: {bt_ty}::capture()")
                     } else {
-                        quote!(#name: ::core::default::Default::default())
+                        format!("{name}: ::core::default::Default::default()")
                     }
                 })
                 .collect();
-            quote!(#enum_name::#variant_name { #(#inits),* })
+            format!("{enum_name}::{variant_name} {{ {} }}", inits.join(", "))
         }
         FieldSet::Unnamed(f) => {
-            let inits: Vec<_> = f
+            let inits: Vec<String> = f
                 .iter()
                 .enumerate()
                 .map(|(i, field)| {
                     if i == from_idx {
-                        quote!(source)
+                        "source".to_string()
                     } else if backtrace_field.as_ref().map(|(_, bi, _)| *bi) == Some(i) {
-                        let bt_ty = &field.ty;
-                        quote!(#bt_ty::capture())
+                        let bt_ty = field.ty.to_string();
+                        format!("{bt_ty}::capture()")
                     } else {
-                        quote!(::core::default::Default::default())
+                        "::core::default::Default::default()".to_string()
                     }
                 })
                 .collect();
-            quote!(#enum_name::#variant_name(#(#inits),*))
+            format!("{enum_name}::{variant_name}({})", inits.join(", "))
         }
-        FieldSet::Unit => quote!(#enum_name::#variant_name),
+        FieldSet::Unit => format!("{enum_name}::{variant_name}"),
     }
 }
 
@@ -1569,9 +1534,9 @@ fn enum_construct_from(
 fn generate_provide_struct(
     source_field: &Option<FieldInfo>,
     backtrace_field: &Option<FieldInfo>,
-) -> TokenStream2 {
+) -> String {
     if backtrace_field.is_none() {
-        return TokenStream2::new();
+        return String::new();
     }
 
     let bt = backtrace_field.as_ref().unwrap();
@@ -1587,21 +1552,19 @@ fn generate_provide_struct(
             &source_field.as_ref().unwrap().0,
             source_field.as_ref().unwrap().1,
         );
-        quote! {
-            ::core::error::Error::provide(&self.#src_accessor, _request);
-        }
+        format!("        ::core::error::Error::provide(&self.{src_accessor}, _request);\n")
     } else {
-        quote! {
-            _request.provide_ref::<::std::backtrace::Backtrace>(&self.#bt_accessor);
-        }
+        format!(
+            "        _request.provide_ref::<::std::backtrace::Backtrace>(&self.{bt_accessor});\n"
+        )
     };
 
-    quote! {
-        #[cfg(error_generic_member_access)]
-        fn provide<'_request>(&'_request self, _request: &mut ::core::error::Request<'_request>) {
-            #body
-        }
-    }
+    format!(
+        "    #[cfg(error_generic_member_access)]
+    fn provide<'_request>(&'_request self, _request: &mut ::core::error::Request<'_request>) {{
+{body}    }}
+"
+    )
 }
 
 fn generate_provide_enum_arm(
@@ -1610,9 +1573,9 @@ fn generate_provide_enum_arm(
     fields: &FieldSet,
     source_field: &Option<FieldInfo>,
     backtrace_field: &Option<FieldInfo>,
-) -> TokenStream2 {
+) -> String {
     if backtrace_field.is_none() {
-        return TokenStream2::new();
+        return String::new();
     }
 
     let bt = backtrace_field.as_ref().unwrap();
@@ -1626,18 +1589,12 @@ fn generate_provide_enum_arm(
 
     let body = if is_source_backtrace {
         let src_binding = &bindings[source_field.as_ref().unwrap().1];
-        quote! {
-            ::core::error::Error::provide(#src_binding, _request);
-        }
+        format!("::core::error::Error::provide({src_binding}, _request);")
     } else {
-        quote! {
-            _request.provide_ref::<::std::backtrace::Backtrace>(#bt_binding);
-        }
+        format!("_request.provide_ref::<::std::backtrace::Backtrace>({bt_binding});")
     };
 
-    quote! {
-        #pat => { #body }
-    }
+    format!("{pat} => {{ {body} }}")
 }
 
 // ============================================================================
@@ -1695,10 +1652,10 @@ fn max_numeric_placeholder(fmt: &str, field_count: usize) -> Option<usize> {
     max
 }
 
-fn find_binding_for_name(fields: &FieldSet, bindings: &[Ident], name: &str) -> Option<Ident> {
+fn find_binding_for_name(fields: &FieldSet, bindings: &[String], name: &str) -> Option<String> {
     if let FieldSet::Named(f) = fields {
         for (i, field) in f.iter().enumerate() {
-            if field.name.as_ref().map(|id| id == name).unwrap_or(false) {
+            if field.name.as_ref().map(|id| id.to_string() == name).unwrap_or(false) {
                 return Some(bindings[i].clone());
             }
         }
@@ -1708,9 +1665,9 @@ fn find_binding_for_name(fields: &FieldSet, bindings: &[Ident], name: &str) -> O
 
 fn find_binding_for_name_or_idx(
     fields: &FieldSet,
-    bindings: &[Ident],
+    bindings: &[String],
     name: &str,
-) -> Option<Ident> {
+) -> Option<String> {
     if let Some(b) = find_binding_for_name(fields, bindings, name) {
         return Some(b);
     }
