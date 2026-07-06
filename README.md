@@ -62,6 +62,39 @@ non-panicking `asserts` which can be **very** useful if applied
 correctly.  You have `Mismatch<T>`, `Outside<T>` and a few others to
 help.
 
+#### `Context<E>`
+
+Sometimes an error on its own doesn't tell you *where* it happened.
+`Context<E>` wraps any `E: core::error::Error` together with a
+free-form breadcrumb `String`, so you keep the original, typed error
+around (reachable through `source()`) while adding a human-readable
+hint about the failure site.
+
+```rust
+use goof::{Context, Error};
+
+#[derive(Debug, Error)]
+#[error("config file not found")]
+struct ConfigMissing;
+
+fn start() -> Result<(), Context<ConfigMissing>> {
+    Err(ConfigMissing).map_err(|e| Context::new("while starting the server", e))?;
+    Ok(())
+}
+
+let err = start().unwrap_err();
+// Display is "{context}: {source}"
+assert_eq!(err.to_string(), "while starting the server: config file not found");
+// The underlying `ConfigMissing` is still there to match on.
+assert!(std::error::Error::source(&err).is_some());
+```
+
+`Context::new(context, source)` builds one from any
+`impl Into<String>` and the wrapped error.  Because the breadcrumb is
+just a field, `Context` nests: a `Context<Context<E>>` accumulates
+breadcrumbs as the error travels up the stack.  It derives `Clone`,
+`PartialEq` and `Eq` whenever `E` does.
+
 ### TODO: Log-and-forget
 
 Most errors aren't really something that you intend to process.  A lot
