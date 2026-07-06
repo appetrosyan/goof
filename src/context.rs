@@ -1,5 +1,7 @@
 //! Attach a free-form breadcrumb to any error: [`Context`].
 
+use alloc::string::String;
+
 use crate::Error;
 
 /// Attach a free-form context string to any error.

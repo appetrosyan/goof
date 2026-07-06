@@ -1,7 +1,7 @@
 //! A type-erased, `Arc`-backed wrapper around any `dyn Error`: [`Mishap`].
 
+use alloc::sync::Arc;
 use core::fmt::{Debug, Display};
-use std::sync::Arc;
 
 /// This type is a rough equivalent of [`eyre::Report`](), with a few key differences.
 ///
@@ -29,17 +29,17 @@ use std::sync::Arc;
 /// ```
 ///
 pub struct Mishap {
-    wrapped_err: Arc<dyn std::error::Error>,
+    wrapped_err: Arc<dyn core::error::Error>,
 }
 
 impl Display for Mishap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.wrapped_err)
     }
 }
 
 impl Debug for Mishap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Mishap")
             .field("wrapped_err", &self.wrapped_err)
             .finish()

@@ -196,16 +196,29 @@
 //! * `goof` bundles the reusable error types listed above, so small
 //!   projects may not need to define custom error types at all.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 pub use goof_derive::Error;
 
-mod context;
-mod mishap;
+// Core-only building blocks: no allocation required.
 mod mismatch;
 mod outside;
 mod unknown;
 
-pub use context::Context;
-pub use mishap::Mishap;
 pub use mismatch::{assert_eq, Mismatch};
 pub use outside::{assert_in, Outside};
 pub use unknown::{assert_known, assert_known_enum, Unknown};
+
+// Types that need a heap allocator (`String`, `Arc`).
+#[cfg(feature = "alloc")]
+mod context;
+#[cfg(feature = "alloc")]
+mod mishap;
+
+#[cfg(feature = "alloc")]
+pub use context::Context;
+#[cfg(feature = "alloc")]
+pub use mishap::Mishap;

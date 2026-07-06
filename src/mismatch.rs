@@ -52,7 +52,7 @@ pub struct Mismatch<T: Copy + Eq + Debug + Display> {
 }
 
 impl<T: Debug + Copy + Eq + Debug + Display> Debug for Mismatch<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Mismatch")
             .field("expected", &self.expected)
             .field("actual", &self.actual)
@@ -61,7 +61,7 @@ impl<T: Debug + Copy + Eq + Debug + Display> Debug for Mismatch<T> {
 }
 
 impl<T: Display + Copy + Eq + Debug + Display> Display for Mismatch<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Expected {}, but got {}", self.expected, self.actual)
     }
 }

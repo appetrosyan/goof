@@ -10,6 +10,14 @@ repository = "https://github.com/appetrosyan/goof"
 [workspace]
 members = ["goof-derive"]
 
+[features]
+default = ["std"]
+# Pulls in the `std` crate. Currently only a super-set of `alloc`; reserved
+# for future std-only helpers (e.g. `Backtrace` integration).
+std = ["alloc"]
+# Enables the allocator-backed types `Mishap` and `Context`.
+alloc = []
+
 [dependencies]
 goof-derive = { path = "goof-derive", version = "0.3.3" }
 

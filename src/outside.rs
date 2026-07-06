@@ -54,7 +54,7 @@ pub struct Outside<T: Ord + Copy + Debug + Display> {
 }
 
 impl<T: Ord + Copy + Debug + Display> Debug for Outside<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Outside")
             .field("range", &self.range)
             .field("value", &self.value)
@@ -63,7 +63,7 @@ impl<T: Ord + Copy + Debug + Display> Debug for Outside<T> {
 }
 
 impl<T: Ord + Copy + Debug + Display> Display for Outside<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.value >= self.range.end {
             write!(f, "Value {} exceeds maximum {}", self.value, self.range.end)
         } else if self.value < self.range.start {
