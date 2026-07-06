@@ -43,6 +43,8 @@ impl<T: Eq + Display> Display for Unknown<'_, T> {
     }
 }
 
+impl<T: Eq + Debug + Display> core::error::Error for Unknown<'_, T> {}
+
 pub fn assert_known_enum<T: Eq>(knowns: &'_ [T], value: T) -> Result<T, Unknown<'_, T>> {
     if knowns.contains(&value) {
         Ok(value)

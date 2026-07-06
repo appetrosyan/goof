@@ -156,10 +156,10 @@
 //! | [`Mismatch<T>`] | An equality check failed (`expected` vs `actual`). |
 //! | [`Outside<T>`]   | A value fell outside a required range. |
 //! | [`Unknown<T>`]   | A value is not among a known set. |
+//! | [`Errors<E>`]    | Several accumulated errors reported together. |
 //! | [`Mishap`]       | A type-erased, `Arc`-backed wrapper around any `dyn Error`. |
 //!
-//! Each type (except [`Unknown`] and [`Mishap`]) implements
-//! [`Error`](core::error::Error) via `derive(Error)`.
+//! Every one of these types implements [`Error`](core::error::Error).
 //!
 //! ## Assertion helpers
 //!
@@ -203,11 +203,15 @@ extern crate alloc;
 
 pub use goof_derive::Error;
 
-// Core-only building blocks: no allocation required.
+// Core-only building blocks: no allocation required.  `Errors` keeps
+// its first `N` entries inline and only reaches for the heap (when
+// `alloc` is enabled) once that buffer overflows.
+mod aggregate;
 mod mismatch;
 mod outside;
 mod unknown;
 
+pub use aggregate::{Errors, ErrorsIntoIter};
 pub use mismatch::{assert_eq, Mismatch};
 pub use outside::{assert_in, Outside};
 pub use unknown::{assert_known, assert_known_enum, Unknown};

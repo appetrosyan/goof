@@ -28,6 +28,7 @@ use core::fmt::{Debug, Display};
 /// }
 /// ```
 ///
+#[derive(Clone)]
 pub struct Mishap {
     wrapped_err: Arc<dyn core::error::Error>,
 }
