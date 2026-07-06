@@ -225,4 +225,4 @@ mod mishap;
 #[cfg(feature = "alloc")]
 pub use context::Context;
 #[cfg(feature = "alloc")]
-pub use mishap::Mishap;
+pub use mishap::{Goof, Mishap};
