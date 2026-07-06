@@ -15,7 +15,7 @@ pub struct Unknown<'a, T: Eq> {
 impl<'a, T: Eq + Copy> Copy for Unknown<'a, T> {}
 
 impl<T: Eq + Debug> Debug for Unknown<'_, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Unknown")
             .field("knowns", &self.knowns)
             .field("value", &self.value)
@@ -24,28 +24,23 @@ impl<T: Eq + Debug> Debug for Unknown<'_, T> {
 }
 
 impl<T: Eq + Display> Display for Unknown<'_, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "The value {} is not known", self.value)?;
         if let Some(knowns) = self.knowns {
-            write!(f, "Because it's not one of [{}]", join(knowns, ", ")?)
+            // Write the known values straight into the formatter, so the
+            // whole impl stays allocation-free (and therefore `no_std`).
+            f.write_str(" because it's not one of [")?;
+            for (i, item) in knowns.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{item}")?;
+            }
+            f.write_str("].")
         } else {
             f.write_str(".")
         }
     }
-}
-
-pub fn join<T: Display>(items: &[T], separator: &'static str) -> Result<String, core::fmt::Error> {
-    use core::fmt::Write;
-
-    let first_element = items[0].to_string();
-    let mut buffer = String::with_capacity(
-        (items.len() - 1) * (separator.len() + first_element.len()) + first_element.len(),
-    );
-    for item in items.iter().skip(1) {
-        buffer.push_str(separator);
-        buffer.write_str(&item.to_string())?;
-    }
-    Ok(buffer)
 }
 
 pub fn assert_known_enum<T: Eq>(knowns: &'_ [T], value: T) -> Result<T, Unknown<'_, T>> {

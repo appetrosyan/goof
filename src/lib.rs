@@ -208,4 +208,4 @@ pub use context::Context;
 pub use mishap::Mishap;
 pub use mismatch::{assert_eq, Mismatch};
 pub use outside::{assert_in, Outside};
-pub use unknown::{assert_known, assert_known_enum, join, Unknown};
+pub use unknown::{assert_known, assert_known_enum, Unknown};
