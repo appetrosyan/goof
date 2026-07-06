@@ -1,5 +1,11 @@
 * Goof
 
+#+BEGIN_COMMENT
+README.md is generated from README.org (the source of truth) by
+./gen-readme.el. Edit this file and rerun it; don't hand-edit the
+Markdown.
+#+END_COMMENT
+
 An early composable, and re-usable library for tiny structs that you
 would be writing on your own, but which you really shouldn't.
 
@@ -50,7 +56,7 @@ different approach to designing error APIs.
 - Contextual error propagation like the old [[https://docs.rs/failure/latest/failure/][=failure=]] crate.
   - Each error can have an optional wrapping structure which explains
     the context and helps in debugging.  Partially available today via
-    =Context<E>= (see [[*Ready-made error types]]).
+    =Context<E>= (see [[#ready-made-error-types][Ready-made error types]]).
   - Support for [[https://docs.rs/tracing/latest/tracing/][tracing spans]], so that errors have tracing spans
     attached. /(planned)/
 - Different error handling methods:
@@ -104,6 +110,9 @@ code. A lot of the time, I found that the doc-comments for Error enum
 variants just repeat the error messages.
 
 *** DONE Ready-made error types
+:PROPERTIES:
+:CUSTOM_ID: ready-made-error-types
+:END:
 
 You get some ready-made error types, to cut out the need for custom
 repeated boilerplate.  You have no idea HOW MANY TIMES, I had to
@@ -111,6 +120,49 @@ create a structure that said, =expect: 1=, =got: 2=.  I have
 non-panicking =assert= functions which can be *very* useful if applied
 correctly.  You have =Mismatch<T>=, =Outside<T>=, =Unknown<T>= and
 =Context<E>= to help.
+
+**** =Context<E>=
+
+Sometimes an error on its own doesn't tell you /where/ it happened.
+=Context<E>= wraps any =E: core::error::Error= together with a
+free-form breadcrumb =String=, so you keep the original, typed error
+around (reachable through =source()=) while adding a human-readable
+hint about the failure site.
+
+#+BEGIN_SRC rust
+  use goof::{Context, Error};
+
+  #[derive(Debug, Error)]
+  #[error("config file not found")]
+  struct ConfigMissing;
+
+  fn start() -> Result<(), Context<ConfigMissing>> {
+      Err(ConfigMissing).map_err(|e| Context::new("while starting the server", e))?;
+      Ok(())
+  }
+
+  let err = start().unwrap_err();
+  // Display is "{context}: {source}"
+  assert_eq!(err.to_string(), "while starting the server: config file not found");
+  // The underlying `ConfigMissing` is still there to match on.
+  assert!(std::error::Error::source(&err).is_some());
+#+END_SRC
+
+=Context::new(context, source)= builds one from any =impl Into<String>=
+and the wrapped error.  Because the breadcrumb is just a field,
+=Context= nests: a =Context<Context<E>>= accumulates breadcrumbs as the
+error travels up the stack.  It derives =Clone=, =PartialEq= and =Eq=
+whenever =E= does.
+
+*** DONE =no_std= support
+
+The crate is =no_std=-friendly, gated behind Cargo features:
+
+- default (=std=) — everything, including =Mishap= and =Context=.
+- =alloc= — the core building blocks plus the allocator-backed
+  =Mishap= and =Context= types, but no =std=.
+- no features (=default-features = false=) — the allocation-free core:
+  =Mismatch=, =Outside=, =Unknown= and the =assert_*= helpers.
 
 *** TODO Log-and-forget
 
@@ -319,3 +371,9 @@ do, I will be providing detailed notes on how to make the jump.
   - Added =Context<E>= for contextual error propagation.
   - =Mismatch=, =Outside= and =Mishap= now implement
     =core::error::Error=.
+- 0.4.0
+  - =no_std= support behind =std= (default) / =alloc= Cargo features;
+    the core types and =assert_*= helpers now build without an
+    allocator.
+  - =Unknown='s =Display= is now allocation-free; the public =join=
+    helper was removed (breaking).
