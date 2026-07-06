@@ -12,3 +12,8 @@ members = ["goof-derive"]
 
 [dependencies]
 goof-derive = { path = "goof-derive", version = "0.3.3" }
+
+[lints.rust]
+# `#[derive(Error)]` emits code gated on this nightly cfg for backtrace
+# support; declare it so downstream builds don't warn about it.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(error_generic_member_access)'] }
